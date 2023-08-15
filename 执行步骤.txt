@@ -1,0 +1,511 @@
+1 wsl中，先启动docker服务
+sudo service docker start
+
+2
+# 首次运行docker项目，方便拷贝代码到本地。 启动容器
+# 如果你在使用docker run命令时已经指定了-it选项，那么你已经启动了一个交互式终端，并且可以直接与容器进行交互。在这种情况下，你不需要再在docker run命令后面添加/bin/bash。
+docker run --gpus all --name trt2023 -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 registry.cn-hangzhou.aliyuncs.com/trt-hackathon/trt-hackathon:wsl
+
+# 报错：
+# 不加--gpus命令进去
+docker run --name trt2023 -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 registry.cn-hangzhou.aliyuncs.com/trt-hackathon/trt-hackathon:wsl
+# 容器中找到，并删掉文件：（管理员权限打开shell）
+ sudo docker exec -it --user=root container_id /bin/bash
+  find / -name "*libcudadebugger*"
+ rm /usr/lib/x86_64-linux-gnu/libcudadebugger.so.1
+# 基于此容器当前内容，创造一个新的镜像
+ docker commit  container_id  images_name
+ docker commit  4ae8d8bc0220  my_trt_wsl_img
+# 删除原来的容器
+ docker rm 4ae8d8bc0220
+# 重新启动新镜像，创建容器：
+ docker run --gpus all --name trt2023 -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 my_trt_wsl_img
+
+
+3 下载代码到本地
+  docker cp trt2023:/home/player/ControlNet .   先到wsl中。可以在文件中找到该映射。
+
+4 启动容器，后台运行。且挂载容器中路径，到wsl的/home/xuweijia/ControlNet/。这样修改wsl中文件，就可以修改docker中内容 （特权模式启动）
+
+docker run --gpus all --name trt2023  -u root  -d  --privileged --ipc=host   --ulimit memlock=-1  --restart=always   --ulimit stack=67108864   -v /home/xuweijia/ControlNet/:/home/player/ControlNet/ my_trt_wsl_img sleep  8640000
+
+5 需要切回普通用户：su player
+  需要给player权限。创建新组，参考教程
+   之后可以使用player用户权限进入容器  
+  docker exec -u player -it trt2023 /bin/bash  
+
+  # 暂时不用。wsl中下载下来的clip-vit-large-patch14，挂载到容器：  /home/xuweijia/clip-vit-large-patch14/    /home/.cache/huggingface/transformers
+  
+
+
+本地开发：
+先把模型转成trt:
+chomod  +x  preprocess.sh && ./preprocess.sh
+
+本地测试：
+# torch推理。生成对应的图片
+# python3  compute_score_torch.py
+
+# trt推理，生成对应图片,并比较
+# python3  compute_score_trt.py
+
+
+验证自己的git仓库,可以拉到容器中运行：
+容器外，wsl中执行：
+cd  /tmp
+rm -rf repo
+git clone git@github.com:Xuweijia-buaa/ControlNet-TensorRT.git
+mv ControlNet-TensorRT  /tmp/repo
+chmod 777  /tmp/repo
+
+# 确保可以通过容器运行。把该项目映射到容器中。
+# 容器中运行预处理，生成导出的模型,到容器本地：
+sudo docker run --rm -t --network none --gpus '0' --name hackathon -v /tmp/repo/:/repo my_trt_wsl_img bash -c "cd /repo && bash preprocess.sh"
+# 容器中运行，用trt推理模型，生成图片。（尝试运行compute_score_torch.py，compute_score_trt.py,计算PD_score, time_cost）
+sudo docker run --rm -t --network none --gpus '0' --name hackathon -v /tmp/repo/:/repo my_trt_wsl_img bash -c "cd /repo && python3 compute_score_torch.py"
+sudo docker run --rm -t --network none --gpus '0' --name hackathon -v /tmp/repo/:/repo my_trt_wsl_img bash -c "cd /repo && python3 compute_score_trt.py"
+# 正式运行时：
+sudo docker run --rm -t --network none --gpus '0' --name hackathon -v /tmp/repo/:/repo my_trt_wsl_img bash -c "cd /repo && python3 compute_score.py"
+
+
+6 容器中查看性能：
+
+      如何在docker 里面使用nsys， nsys 的地址是/home/player/nsight-systems-2023.2.1/bin/nsys. 使用的话需要用root 用户进入docker， 在启动container的时候加上--privileged. 
+   如果使用的是wsl，需要参考https://zhuanlan.zhihu.com/p/644905434 中问题1， 解决权限问题。
+   重启了 (wsl普通用户下 su xuweijia)
+      docker stop trt2023
+   docker remove trt2023
+   docker run --gpus all --name trt2023  -u root  -d  --privileged --ipc=host   --ulimit memlock=-1  --restart=always   --ulimit stack=67108864   -v /home/xuweijia/ControlNet/:/home/player/ControlNet/ my_trt_wsl_img sleep  8640000
+
+
+   进入：
+   docker exec -it trt2023 /bin/bash 
+
+     # 输出: `/home/player`， 说明用户是player  
+     # docker中输入下面的命令，将docker用户的id改成和宿主机一样的，再切换到docker用户就行了。  
+	usermod -u 1000 player  
+	groupadd player  
+        usermod -g player player   
+        chown -R player:player /home/player    
+        groupmod -g 1000 player  
+  
+	# 切换到player用户  
+	su player  
+  
+	# 在docker容器输入id看看  
+	id  
+	# 结果如下：  可以看到player的组id已经改成了1000了 
+	uid=1000(player) gid=1000(player) groups=1000(player),27(sudo)   
+
+   # 以后可以使用player用户权限进入容器  
+   docker exec -u player -it trt2023 /bin/bash    ~
+   docker exec -u root -it trt2023 /bin/bash 
+      
+
+   安装tensortRT
+   pip install /home/player/TensorRT-8.6.1.6/python/tensorrt-8.6.1-cp38-none-linux_x86_64.whl
+   LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/home/player/TensorRT-8.6.1.6/lib/
+
+   运行nsys：
+   (可以用nvtx,把想要的部分括起来 ) 
+      (pip install nvidia-pyindex nvidia-nvtx nvtx)
+      	# 代码中
+   	import nvtx
+   	with nvtx.annotate("Inference part, with nvtx marked", color="green"):
+   /home/player/nsight-systems-2023.2.1/bin/nsys profile --force-overwrite=true  -o report/py_after_cudagraph python3 compute_score.py
+   
+   可以写报告，但没跑成功。
+      切回普通用户跑 (像上边一样设置)
+   /home/player/nsight-systems-2023.2.1/bin/nsys profile --force-overwrite=true  -o report/current_rep python3 compute_score.py
+
+   写入了容器中的文件：
+	[1/1] [========================100%] current_rep.nsys-rep
+	Generated:
+    	/home/player/ControlNet/report/current_rep.nsys-rep
+
+   之后打开Nsight Systems GUI: nsight-sys（这里是nsys-ui） ,然后open，选择current_reph.qdrep文件。看timeline
+   先安装： apt-get install libgl1-mesa-dev
+           sudo apt-get install libxcb-xinerama0
+           sudo apt install libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-render-util0
+           apt-get install libxcb-xinput0
+           apt-get install "^libxcb.*" libx11-xcb-dev libglu1-mesa-dev libxrender-dev
+   /home/player/nsight-systems-2023.2.1/bin/nsys-ui 
+   不行：
+      用wsl nsys-ui打开 ：在\\wsl.localhost\Ubuntu-20.04\home\xuweijia\ControlNet\report里
+
+
+   根据4个infer看：  开头有一个clip（相当于n次）,结束有一个vea(几乎可以忽略)。
+      下边的event,保存到excel. 按nvtx的名称筛选。
+
+      
+     Name	        Start	        Duration	TID	Category
+ clip Inference	153.747s	255.704 ms	6026	
+ clip Inference	154.011s	133.549 ms	6026	首次infer, 大家都比较耗时  clip 400ms     40个
+control inference154.307s	620.393 ms	6026	                         conrol 600ms   共800个。总耗时
+unet inference	154.943s	129.243 ms	6026                             unut 129ms	800个
+control inference155.073s	95.635 ms	6026	
+unet inference	155.171s	67.025 ms	6026	
+control inference155.247s	50.613 ms	6026	
+unet inference	155.3s	        89.035 ms	6026	
+control inference155.39s	46.563 ms	6026	
+unet inference	155.439s	72.528 ms	6026	
+control inference155.519s	50.145 ms	6026	
+unet inference	155.572s	98.541 ms	6026	
+control inference155.671s	81.874 ms	6026	
+unet inference	155.755s	71.795 ms	6026	
+control inference155.837s	55.517 ms	6026	
+unet inference	155.895s	61.952 ms	6026	
+control inference155.957s	68.683 ms	6026
+...
+Name	Start	Duration	TID	Category
+vea inference	169.223s	9.901 ms	6026	                      vea  20个    不用管了。但首次infer ,2s竟然。 不行弄一下这个。 顶10个
+vea inference	158.657s	2.617 s
+
+
+# Name                                     ms
+# control inference               10783.624000   ~
+# unet inference                  13147.023000   ~
+# vea inference                    2827.762000
+# clip Inference                   1164.594000  完全不用管
+# Name: Duration, dtype: float64
+
+
+
+可以对已经形成的plan文件，看推断的性能。
+nsys执行的是trtexec。 加上--loadEngine=foo.plan，进行推断  （trtexec可以设置推断多少次。几次是warmup） （可以只捕获其中一段：--capture-range cudaProfilerApi。该命令设置给nsys）
+nsys profile -o foo_profile  trtexec --loadEngine=foo.plan --warmUp=0 --duration=0 --iterations=50 --profilingVerbosity=detailed
+
+如果该plan文件使用了cudagraph进行推断：trtexec加上了--loadEngine=foo.plan，且加上了--useCudaGraph进行推断。
+本来只能看graph级别的性能了。要看node级别的kernel性能，要给nsys加上--cuda-graph-trace=node
+nsys profile -o foo_profile  --cuda-graph-trace=node trtexec --loadEngine=foo.plan --useCudaGraph --warmUp=0 --duration=0 --iterations=50 --profilingVerbosity=detailed
+
+可以考虑save时加上。看下得到的plan. 在推断时的性能。 --useCudaGraph
+
+
+1   cuda graph
+   
+用nsight system试下。 clip不多的话，主要试下cudagraph
+cuda graph 试了没？ 这个应该能优化小kernel 多的情况
+
+判断是否适合用： Enqueue Time 接近 GPU Compute Time： launch bouned/enqueue-bound 。launch占了太多时间
+                it is recommended that you add the --useCudaGraph flag to enable CUDA graphs in trtexec, 
+                will reduce the Enqueue Time as long as the workload does not contain any synchronization operations. 
+用cudagraph会降低launch开销。只要里边没有很多同步，图中所有kernel只需要launch一次，就可以。 （里边同步多的话，图里边也很慢）
+
+学一下cudagraph吧~~  
+小kernel很多，每个小kernel 2-3us.  cpu luanch一次就5s. 合并多个小kernel,降低launch开销，降低多个kernel变量写回/读入的开销。原来小kernel中变量可以直接放寄存器，不用写回了。 小kernel中内存
+   也不用写回。下个kernel可以直接访问。在这个 pipeline里面整体能有 10ms 的收益。
+让每个kernel计算多一些。大于launch的损失。
+
+已经形成的plan文件（固定）。infer时按计算图，而非多个小kernel launch.   
+
+试一下trtexec save的时候，也打开--useCudaGraph。看得到的plan,之后执行是不是直接按计算图infer   （如果不是。就只能用之前固定的plan,看下usegraph）
+
+
+	然后用nsys比较2个plan的推断性能： (不算warmup和之前的duration,比较总共的)。 （差不多）
+	nsys profile -o report/unet  trtexec --loadEngine=unet_model_fp16_dy.plan --warmUp=0 --duration=0 --iterations=50 --profilingVerbosity=detailed
+	nsys profile -o foo2_rep  trtexec --loadEngine=foo2.plan --warmUp=0 --duration=0 --iterations=50 --profilingVerbosity=detailed
+
+
+	或者用trt-engine-explorer，比较2个plan的推断性能：
+
+如果trtexec save的时候差不多。用之前固定的plan,
+
+    1 先看下usegraph后的推断，和不用时的性能差距（单纯用trtexec测,是快了2倍）  （没看到cuda kernel [All Streams],只看到了cpu上的launch）
+
+                 用这个前缀： /home/player/nsight-systems-2023.2.1/bin/nsys 
+                 nsys的参数加上：--force-overwrite=true
+
+    	# 原始plan
+    	# nsys profile -o report/unet  trtexec --loadEngine=unet_model_fp16_dy.plan --warmUp=0 --duration=0 --iterations=100 --profilingVerbosity=detailed
+
+        # 修改后的plan,convert时带usegraph (不咋快,没太大用)
+        # nsys profile -o report/unet_cg_produce --cuda-graph-trace=node trtexec --loadEngine=unet_model_fp16_dy_cudagraph.plan --warmUp=0 --duration=0 --iterations=50 --profilingVerbosity=detailed
+
+    	# 原始plan, 加usegraph推断     (快了1-2倍以上!)
+    	# nsys profile -o report/unet_cg_infer trtexec --loadEngine=unet_model_fp16_dy.plan --warmUp=0 --duration=0 --iterations=50 --profilingVerbosity=detailed --useCudaGraph
+
+        # 原始plan, 加usegraph推断   （同上，带node一起看）
+    	# nsys profile -o report/unet_cg_infer_node --cuda-graph-trace=node trtexec --loadEngine=unet_model_fp16_dy.plan --warmUp=0 --duration=0 --iterations=50 --profilingVerbosity=detailed --useCudaGraph
+
+
+         nsys生成的报告里，没有Cuda [All Streams]是什么情况吗？也没有报错。不管是直接profile trtexec还是python
+
+         完了重新生成吧，输出层信息。 nsys用--stats=true ，打印一些统计信息。
+                  # 生成
+         trtexec --onnx=<onnx_file> <precision_and_shape_flags> --verbose --profilingVerbosity=detailed --dumpLayerInfo --saveEngine=<engine_path>
+         # nsys测试infer 
+         nsys profile --cuda-graph-trace=node -o <output_profile> trtexec --loadEngine=<engine_path> <precision_and_shape_flags> --useCudaGraph --noDataTransfers --useSpinWait --warmUp=0 --duration=0 --iterations=20
+
+
+       2 差距比较大的话，改写我们的infer代码 。（不用改生成脚本）。
+          测compute_score.py的性能（改写前后）（尽量把编译图，放initilize） 
+          
+1  先转clip/transformer
+2  int 8                可能reformat多。需要写插件。 写个calibration的class, 加到config就可以。目前有人2周了还是不通
+
+3 加大batch_size
+4 trt-engine-explorer  可视化engine。 可以详细看每层的算子。用的精度。推理时间。    比nsight好用，发现了trt的kernel只有几个us. 大量小kernel
+	● 昨晚我们搜了下工具，发现https://github.com/NVIDIA/TensorRT/tree/release/8.6/tools/experimental/trt-engine-explorer 这个工具绘制的engine 执行可视化非常不错
+	● Tlntin@16:47[赞]我也是用这个，确实好用。
+	● Tlntin@16:48可以看到详细，每层有什么算子，用什么精度，推理时间等
+	● 张思达@16:49是的，就是靠这个，我们才发现trt生成的kernel执行只有几个us 
+
+5 step
+  setp8 3889.8860
+  step11  4122 
+
+6 后续trtexec,直接可以用的优化参数：
+# --noTF32   Disable tf32 (default enable tf32,fp32)
+# --int8
+# --best   （允许所有精度） 得分0，完全没精度了。 （跑了不太对，混上下边这个了）  重跑
+# --builderOptimizationLevel=5 （default 3，最大可以是5）   4215.0970  
+# --maxAuxStreams=4                    
+
+
+vscode 写入wsl docker文件，没有权限的问题：      （nsys没法写入用户文件夹的问题，也可以这么解决，也许）
+1 以root权限进入容器：    
+   docker exec -u root -it trt2023 /bin/bash          ~
+   docker exec -u player -it trt2023 /bin/bash
+2 查看每个文件归属的用户/用户组
+    ll
+3 有些文件在root用户下，改到player用户下。这样就可以以player身份编辑对应文件了
+   chown -R player:player /home/player/ControlNet
+
+   docker exec -u player -it trt2023 /bin/bash
+
+
+重跑nsys + nvtx,找bottle neck
+
+root用户下跑：docker exec -u root -it trt2023 /bin/bash
+
+# 一定要加上--cuda-graph-trace=node，才能看到完整的结果
+/home/player/nsight-systems-2023.2.1/bin/nsys profile --cuda-graph-trace=node --force-overwrite=true  -o report/current_rep python3 compute_score.py
+
+Name	Start	Duration	TID	Category
+ clip Inference	103.517s	111.963 ms	16793                   clip现在相对耗时。尽管只有一次	
+ clip Inference	103.632s	85.414 ms	16793	
+control inference	103.74s	9.577 ms	16793	
+unet inference	103.751s	21.862 ms	16793	
+control inference	103.774s	11.419 ms	16793	
+unet inference	103.788s	21.216 ms	16793	
+control inference	103.815s	9.370 ms	16793	
+unet inference	103.827s	20.181 ms	16793	
+control inference	103.848s	9.273 ms	16793	
+unet inference	103.86s	19.664 ms	16793	
+control inference	103.886s	9.469 ms	16793	
+unet inference	103.898s	21.430 ms	16793	
+control inference	103.92s	9.334 ms	16793	
+unet inference	103.933s	24.236 ms	16793	
+control inference	103.967s	9.539 ms	16793	
+unet inference	103.978s	20.082 ms	16793	
+control inference	103.999s	9.060 ms	16793	
+unet inference	104.01s	20.533 ms	16793	
+control inference	104.037s	9.474 ms	16793	
+
+
+clip现在平均每次推理是最耗时的。尽管次数少，但是每次耗时大：
+单次：
+clip: 单次基本80ms-100ms. 40多次  3200-4000     ***
+vea:   单次20-40ms   20次                 400-800
+unet: 单次20ms       400次                   8000
+control：单次10ms       400次            4000
+
+总的统计(ms)：
+ clip Inference                 3585.553000     clip量级和control差不多了都。
+control inference               3929.608000
+unet inference                  8472.958000    * unet最大. 尽管一次infer只要20ms
+vea inference                    627.303000
+
+单次infer:
+Name
+ clip Inference                 89.638825    clip最大，是其他的2/4/10倍。   40次 cliP(3600), 相当于400次control。
+vea inference                   31.365150
+unet inference                  21.182395
+control inference                9.824020
+Name: Duration, dtype: float64
+
+Name	Start	Duration	TID	Category
+ clip Inference	107.845s	159.806 ms	16793	
+ clip Inference	103.517s	111.963 ms	16793	
+ clip Inference	108.01s	109.856 ms	16793	
+ clip Inference	123.218s	100.709 ms	16793	
+ clip Inference	118.031s	97.766 ms	16793	
+ clip Inference	119.082s	97.534 ms	16793	
+ clip Inference	116.011s	93.060 ms	16793	
+ clip Inference	114.093s	92.791 ms	16793	
+ clip Inference	122.222s	89.821 ms	16793	
+ clip Inference	118.132s	88.993 ms	16793	
+ clip Inference	114.002s	88.347 ms	16793	
+ clip Inference	123.321s	88.266 ms	16793	
+ clip Inference	108.969s	88.229 ms	16793	
+ clip Inference	113.062s	87.455 ms	16793	
+ clip Inference	119.182s	87.223 ms	16793	
+ ...
+ clip Inference	104.642s	82.683 ms	16793	
+ clip Inference	120.111s	82.496 ms	16793	
+ clip Inference	104.557s	82.386 ms	16793	
+ clip Inference	115.111s	82.227 ms	16793	
+ clip Inference	112.071s	81.176 ms	16793	       clip: 单次基本80ms. 40多次
+vea inference	118.984s	50.224 ms	16793	       vea单次50ms. 次数倒是不多
+vea inference	105.625s	49.149 ms	16793	
+vea inference	108.881s	34.480 ms	16793	
+vea inference	109.909s	34.080 ms	16793	
+vea inference	115.929s	33.483 ms	16793	
+vea inference	117.945s	30.517 ms	16793	
+vea inference	113.907s	30.481 ms	16793	
+unet inference	122.511s	30.348 ms	16793	         unet最耗时的一次infer 30ms
+vea inference	110.877s	29.916 ms	16793	
+vea inference	123.136s	29.820 ms	16793	
+unet inference	106.982s	29.213 ms	16793	
+vea inference	104.478s	28.915 ms	16793	
+unet inference	106.187s	28.899 ms	16793	
+vea inference	111.893s	28.775 ms	16793	
+vea inference	120.028s	28.618 ms	16793	
+
+
+wsl可以跑 (但我不行。放弃)
+吴锦煊@18:30 在windows下开启非管理员的性能计数器
+吴锦煊@18:30 启动docker加priviliged  docker run --privileged
+吴锦煊@18:30 在root用户下nysys就行      docker exec -u root -it trt2023 /bin/bash
+
+
+1  先转clip/transformer  -> trt  （单次infer太慢）
+   再看nsys
+
+   docker中： （clip没用cuda_graph）
+   /home/player/nsight-systems-2023.2.1/bin/nsys profile --cuda-graph-trace=node --force-overwrite=true  -o report/current_rep python3 compute_score.py
+
+   -------------------clip改进后+ cudagraph---------------
+Name
+ clip Inference                   89.783000   不用管了
+control inference               2519.839000   ~
+unet inference                  4890.244000   ~   大头。尽管一次推理已经很快了。但次数多。
+vea inference                    718.807000
+Name: Duration, dtype: float64
+Name
+ clip Inference                  2.244575
+control inference                6.299597    单次平均6ms, 400次，占小头
+unet inference                  12.225610    单次平均10ms. 400次。占大头
+vea inference                   35.940350   （也上cudagraph）
+Name: Duration, dtype: float64
+
+
+
+pd 爆了。 试下fp32 /  clip_cudagraph
+
+batch=2  提升挺多。
+batch_size:  ~~~
+
+       opt_max=2。 动态shape里，B都设置成2
+       2次调用apply_models: 合成一次batch=2的调用
+-------------------总的---------------
+Name
+ clip Inference                  103.726000  完全不用管
+control inference               2105.742000
+unet inference                  3481.035000   时间少了1/4  总的7000模式  -> 5500ms
+vea inference                    611.998000   顺手写了吧
+Name: Duration, dtype: float64
+-------------------单次---------------
+Name
+ clip Inference                  2.593150
+control inference               10.528710
+unet inference                  17.405175
+vea inference                   30.599900  用个cudagraph吧
+Name: Duration, dtype: float64
+
+顺手全写了cudagraph:
+-------------------总的---------------
+Name
+ clip Inference                  105.33800
+control inference                692.92500
+unet inference                  3275.98800     主要处理unet  
+vea inference                    280.73700
+Name: Duration, dtype: float64
+-------------------单次---------------
+Name
+ clip Inference                  2.633450
+control inference                3.464625
+unet inference                  16.379940       主要处理unet 
+vea inference                   14.036850
+Name: Duration, dtype: float64
+ok
+
+2 重点模型如unet   plugin + trex
+
+  unet:
+
+      学一下TensorRT Plugin （PPT里的例子）， 可以手动融合算子， 确定是fused后的节点，没法和其他节点融合了   （要融合的kernel,用trex看plan）
+
+        TensorRT 8.6 中部分 Plugin 已加入 TensorRT，不再需要 Plugin ##
+    优先尝试tensorRT自带的plugin.https://github.com/NVIDIA/TensorRT/tree/main/plugin
+
+    GroupNorm plugin 说是必须加.  
+      参考
+        https://github.com/NVIDIA/TensorRT/tree/main/plugin/groupNormalizationPlugin
+        https://github.com/NVIDIA/TensorRT/tree/release/8.5/plugin/groupNormalizationPlugin    ~  先试这个，和int8 calibration.   和替换fasttransformer。
+     
+     单独的 group norm 插件直接实现了 pytorch 版本的 group norm。 带instance Norm 后边，带add和mul
+
+   融合fasttransformer
+
+    插件，计算图融合
+      （PPT给的插件例子，找到pattern,几类典型kernel融合。或者ONNX-graphsurgeon）
+          TRT plugin来手动实现graph fusion
+          利用TRT外部的资源，比如Cutlass，FlashAttn， xformer，将kernel implementation封装到TRT plugin
+         
+     Main perf bottleneck: unfused MHA，占30% end2end time
+     MHA plugin/ MHCA plugin/GroupNorm plugin
+
+     
+
+  int 8                
+       先不试了。pd可能要爆了
+
+        试试int8 PTQ (我跑了几次int8 ptq好像没出过这个问题)        
+
+        量化感知训练（QAT）相比于训练后量化（PTQ）有更高的精度
+       可能reformat多。需要写插件。 写个calibration的class, 加到config就可以。目前有人2周了还是不通  ptq
+  
+               训练阶段，TensorRT提供了基于PyTorch的INT8量化工具包，帮助生成QAT模型，并维持原有精度
+              模型转换阶段， TensorRT ONNX parser新增了对ONNX QuantizeLinear和DequantizeLinear算子的支持
+              推理阶段，TensorRT 8.0新增了Quantize和Dequantize层以及基于Q/DQ的图优化
+
+              先尝试：
+
+       [发呆]我跑了几次int8 ptq好像没出过这个问题. (但精度不好)
+
+              参考demo: https://github.com/NVIDIA/TensorRT/tree/release/8.6/tools/Polygraphy/examples/api/04_int8_calibration_in_tensorrt
+
+
+后续trtexec,直接可以用的优化参数：
+# --noTF32   Disable tf32 (default enable tf32,fp32)
+# --int8
+# --best   （允许所有精度） 得分0，完全没精度了。 （跑了不太对，混上下边这个了）  重跑
+# --builderOptimizationLevel=5 （default 3，最大可以是5）   4215.0970  
+# --maxAuxStreams=4     
+试试multistream  
+试试plugin
+       
+    
+最后试下
+
+Tlntin:其他人也可以试试 将优化等级改成5,然后shape调到固定最小，大概可以加1000-2000分。
+@Tlntin大佬，请问这个shape调到固定最小具体是指什么呀，是不用动态shape还是说用minShapes啊
+onnx转trt时，min/opt/max都是一样的，取最小
+
+
+明天试下。2个module， 合成一个nn.module。  用一个forward.
+
+modelA
+modelB
+ .> modelC  导出一个modelC
+
+
+一个新的modelC,裹着self.modelA,self.modelB
+一个forward里，调用modelA,B的forward
+self.modelA.controlmodel()
+self.modelB.diffmodel()
+
+把C导出成一个engine.
+        

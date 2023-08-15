@@ -1,0 +1,62 @@
+1 先转了另外2个模型 （fp16/fp32 + 精度检查） (如果精度差太多，保持fp32. 看瓶颈。)   ***
+
+   参考：https://tianchi.aliyun.com/forum/post/574634。 代码在07-Tool\FP16FineTuning\getReferenceInputOutput.py
+   
+2 nv system: 看哪里是瓶颈。 用nvtp在几个函数上前后设置标志。     **
+   nsys --profile
+
+   /home/player/nsight-systems-2023.2.1/target-linux-x64/
+   nsys profile -o report/current_rep -f python3 compute_score.py
+
+   打开Nsight Systems GUI: nsight-sys ,然后open，选择prefetch.qdrep文件。看timeline
+
+   可以用nvtx,把想要的部分括起来
+   import nvtx
+      with nvtx.annotate("Inference part, with nvtx marked", color="green"):
+
+3  nsys  用 --useCudaGraph 的时候也是这样，不用 cuda graph 好像是正常的。 xixixixi 8000分
+
+
+
+
+4 增加batch size，2.使用fp16，，4.试试cudagraph。
+
+试试multistream  
+试试plugin
+
+5 图编辑：
+
+   1 onnx-graphsurgeon 图编辑
+   2 polygraphy        修改onnx子图。surgeon 模式     参考08-Tool/polygraphy/surgeonExample，运行 ./command.sh
+     # 01-Simplify the graph using polygraphy
+     polygraphy surgeon sanitize modelA.onnx \
+      --fold-constant \
+      -o modelA-FoldConstant.onnx \
+       > result-01.log
+
+➢ 使用 polygraphy：  polygraphy surgeon sanitize --fold-constant /workspace/encoder.onnx -o /target/encoderV2.onnx  ~
+➢ 使用 onnx-optimizer（脚本）
+➢ 使用 onnxsim（命令或脚本）     ~
+    onnx-optimizer 基本没有效果；
+        polygraphy 有一定化简效果；
+       onnxsim 化简效果最明显，但节点改动比较大，后续手工优化时要注意调整
+
+6 cudaGraph                   参考08-Advance\CudaGraph  缓解大量 kernel 调用时的 Launch Bound
+
+➢基本流程
+➢ Netron 分析原始 .onnx 文件中需要替换的模块
+➢ 使用 onnx-graphsurgeon 修改 .onnx 替换新节点
+➢ 实现相应的 Plugin 并做好单元测试
+➢ 在 TensorRT 中加载修改后的 .onnx 和 Plugin
+➢ 对比加载前后的计算精度和性能表现
+
+➢使用各项优化技术后的预计得分（不是评分标准）：
+➢ 完成 onnx-graphsurgeon 模型调整： ~800分
+➢ 使用 FP32 模式正确运行模型 ~1100分
+➢ 完成 Layer Normalization Plugin： ~1400分
+➢ 完成其他图优化： ~1600分
+➢ 正确使用 FP16 / INT8（含精度控制）： ~1900分
+➢ 使用除了 Attention Plugin 以外所有优化手段： ~2200分
+➢ 使用高效 Attention Plugin： >2200分
+
+参考2022 ppt+ Best Practice
